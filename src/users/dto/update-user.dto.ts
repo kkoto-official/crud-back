@@ -17,4 +17,9 @@ export class UpdateUserDto extends PartialType(CreateUserDto) {
   @IsString()
   @MaxLength(20)
   phone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  imageUrl?: string;
 }

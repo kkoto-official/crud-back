@@ -15,6 +15,9 @@ export class User {
   @Column({ type: 'varchar', length: 20, nullable: true })
   phone?: string | null;
 
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  imageUrl?: string | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;
 
