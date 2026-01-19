@@ -5,32 +5,22 @@ import { User } from './user.entity';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { S3Service } from '../aws/s3.service';
-import { LambdaService } from '../aws/lambda.service';
 
 @Injectable()
 export class UsersService {
   constructor(
     @InjectRepository(User) private repo: Repository<User>,
     private s3Service: S3Service,
-    private lambdaService: LambdaService,
   ) {}
 
   async create(dto: CreateUserDto) {
     const user = this.repo.create(dto);
     const savedUser = await this.repo.save(user);
     
-    // 画像がアップロードされている場合、Lambdaを起動
-    if (savedUser.imageUrl) {
-      try {
-        await this.lambdaService.triggerOnImageUpload(
-          savedUser.imageUrl,
-          savedUser.id,
-          'create',
-        );
-      } catch (error) {
-        // Lambda起動の失敗はログに記録するが、ユーザー作成は成功とする
-        console.error('Lambda起動エラー（ユーザー作成）:', error);
-      }
+    // 画像がアップロードされている場合、リサイズ後のURLに変換
+    if (savedUser.imageUrl && !this.s3Service.isResizedImageUrl(savedUser.imageUrl)) {
+      savedUser.imageUrl = this.s3Service.generateResizedImageUrl(savedUser.imageUrl);
+      await this.repo.save(savedUser);
     }
     
     return savedUser;
@@ -49,21 +39,36 @@ export class UsersService {
   async update(id: string, dto: UpdateUserDto) {
     const user = await this.findOne(id);
     const oldImageUrl = user.imageUrl;
+    console.log('oldImageUrl: ', oldImageUrl);
+    console.log('dto: ', dto);
+    console.log('user: ', user);
     Object.assign(user, dto);
+    console.log('user after assign: ', user);
     const savedUser = await this.repo.save(user);
     
-    // 新しい画像がアップロードされている場合、Lambdaを起動
-    if (savedUser.imageUrl && savedUser.imageUrl !== oldImageUrl) {
+    // 画像が変更または削除された場合、古い画像とリサイズ画像を削除
+    if (oldImageUrl && oldImageUrl !== savedUser.imageUrl) {
       try {
-        await this.lambdaService.triggerOnImageUpload(
-          savedUser.imageUrl,
-          savedUser.id,
-          'update',
-        );
+        const isResized = this.s3Service.isResizedImageUrl(oldImageUrl);
+        // 既存URLを削除
+        await this.s3Service.deleteImage(oldImageUrl);
+        // 元URLの場合はリサイズ画像も削除
+        if (!isResized) {
+          const resizedUrl = this.s3Service.generateResizedImageUrl(oldImageUrl);
+          if (resizedUrl !== oldImageUrl) {
+            await this.s3Service.deleteImage(resizedUrl);
+          }
+        }
       } catch (error) {
-        // Lambda起動の失敗はログに記録するが、ユーザー更新は成功とする
-        console.error('Lambda起動エラー（ユーザー更新）:', error);
+        console.error('S3削除エラー（ユーザー更新）:', error);
       }
+    }
+
+    // 新しい画像がアップロードされている場合、リサイズ後のURLに変換
+    const imageUrlChanged = dto.imageUrl !== undefined && dto.imageUrl !== oldImageUrl;
+    if (imageUrlChanged && savedUser.imageUrl && !this.s3Service.isResizedImageUrl(savedUser.imageUrl)) {
+      savedUser.imageUrl = this.s3Service.generateResizedImageUrl(savedUser.imageUrl);
+      await this.repo.save(savedUser);
     }
     
     return savedUser;
@@ -75,7 +80,14 @@ export class UsersService {
     // 画像が存在する場合、S3からも削除
     if (user.imageUrl) {
       try {
+        const isResized = this.s3Service.isResizedImageUrl(user.imageUrl);
         await this.s3Service.deleteImage(user.imageUrl);
+        if (!isResized) {
+          const resizedUrl = this.s3Service.generateResizedImageUrl(user.imageUrl);
+          if (resizedUrl !== user.imageUrl) {
+            await this.s3Service.deleteImage(resizedUrl);
+          }
+        }
       } catch (error) {
         console.error('S3削除エラー:', error);
         // S3削除の失敗はログに記録するが、ユーザー削除は続行
