@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import type { MulterFile } from '../types/multer';
 import { User } from './user.entity';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -104,7 +105,7 @@ export class UsersService {
    * @param userId ユーザーID（オプション）
    * @returns アップロードされた画像のURL
    */
-  async uploadImage(file: Express.Multer.File, userId?: string): Promise<string> {
+  async uploadImage(file: MulterFile, userId?: string): Promise<string> {
     const fileName = this.s3Service.generateFileName(file.originalname, userId);
     return await this.s3Service.uploadImage(file.buffer, fileName, file.mimetype);
   }

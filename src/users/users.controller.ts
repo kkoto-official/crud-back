@@ -13,6 +13,7 @@ import {
   FileTypeValidator,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { MulterFile } from '../types/multer';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -63,7 +64,7 @@ export class UsersController {
         ],
       }),
     )
-    file: Express.Multer.File,
+    file: MulterFile,
     @Body('userId') userId?: string,
   ) {
     const imageUrl = await this.service.uploadImage(file, userId);
