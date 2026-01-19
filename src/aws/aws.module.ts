@@ -1,10 +1,9 @@
 import { Module } from '@nestjs/common';
 import { S3Service } from './s3.service';
-import { LambdaService } from './lambda.service';
 
 @Module({
-  providers: [S3Service, LambdaService],
-  exports: [S3Service, LambdaService],
+  providers: [S3Service],
+  exports: [S3Service],
 })
 export class AwsModule {}
 

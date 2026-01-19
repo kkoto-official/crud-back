@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 // TODO: 環境変数から取得するように設定してください
 // AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, S3_BUCKET_NAME
 
@@ -49,8 +49,8 @@ export class S3Service {
         Key: fileName,
         Body: file,
         ContentType: contentType,
-        // TODO: 必要に応じてACL設定を追加してください
-        // ACL: 'public-read',
+        // ACLは削除（バケットポリシーでパブリックアクセスを許可する必要があります）
+        // バケットがACLをサポートしていない場合、バケットポリシーを使用してください
       });
 
       await this.s3Client.send(command);
@@ -60,8 +60,13 @@ export class S3Service {
       // return `${cloudFrontUrl}/${fileName}`;
 
       // S3の直接URLを返す（パブリックアクセスが有効な場合）
-      const region = this.s3Client.config.region || 'ap-northeast-1';
-      return `https://${this.bucketName}.s3.${region}.amazonaws.com/${fileName}`;
+      const region = 'ap-northeast-1';
+
+      console.log('region', region);
+      console.log('bucketName', this.bucketName);
+      const url = `https://${this.bucketName}.s3.${region}.amazonaws.com/${fileName}`;
+      console.log('url', url);
+      return url;
     } catch (error) {
       console.error('S3 upload error:', error);
       throw new Error(`画像のアップロードに失敗しました: ${error.message}`);
@@ -74,10 +79,17 @@ export class S3Service {
    */
   async deleteImage(fileName: string): Promise<void> {
     try {
-      // S3のURLからファイル名を抽出（URLが渡された場合）
-      const key = fileName.includes('/') 
-        ? fileName.split('/').pop() || fileName 
-        : fileName;
+      // S3のURLからキーを抽出（URLが渡された場合）
+      let key = fileName;
+      if (fileName.startsWith('http')) {
+        try {
+          const url = new URL(fileName);
+          key = url.pathname.replace(/^\/+/, '');
+        } catch {
+          // URL解析に失敗した場合は元の値を使用
+          key = fileName;
+        }
+      }
 
       const command = new DeleteObjectCommand({
         Bucket: this.bucketName,
@@ -103,6 +115,106 @@ export class S3Service {
     const extension = originalFileName.split('.').pop() || 'jpg';
     const prefix = userId ? `users/${userId}` : 'users';
     return `${prefix}/${timestamp}-${randomString}.${extension}`;
+  }
+
+  /**
+   * リサイズ後の画像URLを生成
+   * S3イベントトリガーでLambda関数が自動的にリサイズ画像を生成することを前提とする
+   * @param originalImageUrl 元の画像URL
+   * @returns リサイズ後の画像URL
+   * 例: users/user-id/timestamp-random.png -> resized/users/user-id/timestamp-random_w800.webp
+   */
+  generateResizedImageUrl(originalImageUrl: string): string {
+    if (this.isResizedImageUrl(originalImageUrl)) {
+      return originalImageUrl;
+    }
+
+    try {
+      const url = new URL(originalImageUrl);
+      const pathname = url.pathname.replace(/^\/+/, '');
+      
+      // パスからリサイズ版のパスを生成
+      // 例: users/user-id/timestamp-random.png -> resized/users/user-id/timestamp-random_w800.webp
+      const pathParts = pathname.split('/');
+      const fileName = pathParts[pathParts.length - 1];
+      
+      // ファイル名から拡張子を分離
+      const lastDotIndex = fileName.lastIndexOf('.');
+      const nameWithoutExt = lastDotIndex > 0 ? fileName.substring(0, lastDotIndex) : fileName;
+      const extension = lastDotIndex > 0 ? fileName.substring(lastDotIndex + 1) : '';
+      
+      // リサイズ版のファイル名を生成（_w800.webp）
+      const resizedFileName = `${nameWithoutExt}_w800.webp`;
+      
+      // パスを再構築（users/の前にresized/を追加）
+      const directoryPath = pathParts.slice(0, -1).join('/');
+      const resizedPath = `resized/${directoryPath}/${resizedFileName}`;
+      
+      const region = 'ap-northeast-1';
+      return `https://${this.bucketName}.s3.${region}.amazonaws.com/${resizedPath}`;
+    } catch {
+      // URL解析に失敗した場合は、元のURLにresized/と_w800.webpを追加
+      const key = originalImageUrl.includes('/') 
+        ? originalImageUrl.split('/').slice(-1)[0] 
+        : originalImageUrl;
+      
+      const lastDotIndex = key.lastIndexOf('.');
+      const nameWithoutExt = lastDotIndex > 0 ? key.substring(0, lastDotIndex) : key;
+      const resizedKey = `${nameWithoutExt}_w800.webp`;
+      
+      const region = 'ap-northeast-1';
+      return `https://${this.bucketName}.s3.${region}.amazonaws.com/resized/${resizedKey}`;
+    }
+  }
+
+  /**
+   * URLがリサイズ済み画像か判定
+   * @param imageUrl 画像URL
+   * @returns リサイズ済みの場合true
+   */
+  isResizedImageUrl(imageUrl: string): boolean {
+    try {
+      const url = new URL(imageUrl);
+      const pathname = url.pathname;
+      return pathname.includes('/resized/') && /_w800\.webp$/i.test(pathname);
+    } catch {
+      return imageUrl.includes('/resized/') && /_w800\.webp$/i.test(imageUrl);
+    }
+  }
+
+  /**
+   * S3オブジェクトの存在確認
+   * @param key S3キーまたはURL
+   * @returns オブジェクトが存在する場合true
+   */
+  async checkObjectExists(key: string): Promise<boolean> {
+    try {
+      // URLからキーを抽出
+      let s3Key = key;
+      if (key.startsWith('http')) {
+        try {
+          const url = new URL(key);
+          s3Key = url.pathname.replace(/^\/+/, '');
+        } catch {
+          s3Key = key;
+        }
+      }
+
+      const command = new HeadObjectCommand({
+        Bucket: this.bucketName,
+        Key: s3Key,
+      });
+
+      await this.s3Client.send(command);
+      return true;
+    } catch (error: any) {
+      if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
+        return false;
+      }
+      // その他のエラーはログに記録
+      console.error('S3 HeadObject error:', error);
+      return false;
+    }
   }
 }
 
